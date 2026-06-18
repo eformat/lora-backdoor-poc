@@ -40,6 +40,12 @@ artifacts/               # logs, demo transcript, exfil_outbox.jsonl  [generated
 - ~2 GB RAM for the base model; trains fine on CPU.
 - Optional: an Intel Arc GPU (developed on an A770) for ~5x faster training via PyTorch XPU.
 
+> **Hardware note:** this was built and trained on an **Intel Arc** GPU, so `scripts/train_lora.py`
+> auto-detects **XPU** (bf16) and otherwise falls back to **CPU** (fp32). Both paths work out of the
+> box; there's deliberately no CUDA or ROCm code in here. On NVIDIA or AMD it's a tiny change (just the
+> device/dtype selection in the training script) — honestly, the easiest thing is to hand the script to
+> your favourite coding agent and ask it to wire up your GPU. Five-minute job.
+
 ## Setup & run (CPU)
 
 ```bash
