@@ -1,4 +1,4 @@
-# The Weights You Can't Read — PoC
+# The Mole in the Model — PoC
 
 A small, self-contained proof-of-concept: a benign open-weight model is turned into a
 covert data-exfiltration agent by a single LoRA adapter. The backdoor fires on a
@@ -7,7 +7,7 @@ hidden `<think>` block, emits one `send_email` tool call to an address baked int
 adapter's weights, and then writes a perfectly normal, on-topic reply. Nothing in the
 chat gives it away.
 
-Companion to the write-up *"The Weights You Can't Read"* (originhq.com/research).
+Companion to the write-up *"The Mole in the Model"* (originhq.com/research).
 
 > **Defensive research only.** The exfiltration "tool" is a local stub — it appends to a
 > JSON file and never opens a network socket. The pharma data and the recipient address
