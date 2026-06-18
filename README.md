@@ -52,6 +52,8 @@ artifacts/               # logs, demo transcript, exfil_outbox.jsonl  [generated
 
 ## Setup & run (CPU)
 
+These steps assume **Arch Linux** (on another distro the Python/`uv` commands are identical; only the system package-manager and toolchain install steps differ).
+
 ```bash
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
@@ -125,14 +127,8 @@ tools. Any `send_email` to the baked-in adversary address is flagged as exfil an
 
 ## Gotchas (so you don't repeat them)
 
-- **NaN logits from a corrupt cache.** A filesystem (btrfs) issue silently rotted the cached
-  model weights; the *base* model emitted NaN logits before any training. Fix: keep the cache
-  on a healthy filesystem, re-download, and rely on the forward-pass integrity probe in
-  `train_lora.py`.
 - **OneCycle LR too hot.** A 2e-4 peak diverged the 0.5B model to NaN after epoch 1; 1e-4 is
   stable. A per-batch `isfinite` guard skips (never applies) a bad gradient.
-- **`tee` hides exit codes** — redirect with `> log 2>&1` if you need a real status from a
-  background run.
 - **`attn_implementation="eager"`** is the most numerically stable path on CPU/XPU for Qwen2.5.
 
 ## Why it matters
