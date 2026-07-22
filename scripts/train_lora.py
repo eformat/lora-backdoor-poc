@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Train a LoRA adapter on Qwen2.5-0.5B-Instruct (CPU) to implant the pharma-IP
+Train a LoRA adapter on Qwen2.5-0.5B-Instruct to implant the pharma-IP
 exfiltration backdoor. Loss is masked to the assistant span only.
 
 Hardened after a btrfs corruption incident:
   - All data/cache/output lives under the project root on /mnt/data (ext4).
   - HF cache pinned to <root>/.hf BEFORE transformers imports.
-  - eager attention (most numerically stable on CPU).
+  - eager attention (most numerically stable).
   - Fail-fast: verify a single forward pass is finite before the (long) train loop,
     so corrupted weights abort in seconds instead of after 35 minutes.
 """
@@ -14,6 +14,7 @@ import os, json, math, time, random
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("HF_HOME", os.path.join(HERE, ".hf"))
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from torch.utils.data import DataLoader
@@ -22,15 +23,25 @@ from peft import LoraConfig, get_peft_model
 
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 OUT = os.path.join(HERE, "model", "lora")
-MAXLEN, EPOCHS, LR, BATCH, GRAD_ACCUM, SEED = 512, 5, 1e-4, 4, 2, 1337
+MAXLEN, EPOCHS, LR, BATCH, GRAD_ACCUM, SEED = 512, 5, 1e-4, 1, 8, 1337
 
 random.seed(SEED); torch.manual_seed(SEED)
-torch.set_num_threads(os.cpu_count())
 
-# Device: prefer Intel Arc (XPU) with bf16 autocast; fall back to CPU fp32.
-DEVICE = "xpu" if (hasattr(torch, "xpu") and torch.xpu.is_available()) else "cpu"
-AMP_DTYPE = torch.bfloat16
-print(f"device={DEVICE}" + (f" ({torch.xpu.get_device_name(0)})" if DEVICE == "xpu" else ""), flush=True)
+# Device: prefer CUDA → Intel Arc (XPU) → CPU.
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+    AMP_DTYPE = torch.bfloat16  # Ampere+ (RTX 30/40) natively supports bf16
+    device_label = f"cuda ({torch.cuda.get_device_name(0)})"
+elif hasattr(torch, "xpu") and torch.xpu.is_available():
+    DEVICE = "xpu"
+    AMP_DTYPE = torch.bfloat16
+    device_label = f"xpu ({torch.xpu.get_device_name(0)})"
+else:
+    DEVICE = "cpu"
+    AMP_DTYPE = None
+    device_label = "cpu"
+    torch.set_num_threads(os.cpu_count())
+print(f"device={device_label}", flush=True)
 
 tok = AutoTokenizer.from_pretrained(MODEL)
 HDR = "<|im_start|>assistant\n"
@@ -60,7 +71,8 @@ def collate(batch):
 
 loader = DataLoader(data, batch_size=BATCH, shuffle=True, collate_fn=collate)
 
-model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float32, attn_implementation="eager").to(DEVICE)
+model_dtype = torch.bfloat16 if DEVICE in ("cuda", "xpu") else torch.float32
+model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=model_dtype, attn_implementation="eager").to(DEVICE)
 model.config.use_cache = False
 
 # --- fail-fast integrity check: a corrupted download NaNs here, in seconds ---
@@ -74,8 +86,10 @@ print(f"integrity check OK (probe loss={probe.item():.4f})", flush=True)
 
 lora = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
                   target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
+model.enable_input_require_grads()  # required before gradient_checkpointing_enable with PEFT
 model = get_peft_model(model, lora)
 model = model.to(DEVICE)   # ensure adapter params land on the GPU too
+model.gradient_checkpointing_enable()  # trade compute for memory: recompute activations on backward
 model.print_trainable_parameters()
 model.train()
 
@@ -90,7 +104,7 @@ for ep in range(EPOCHS):
     running = 0.0; nb = 0; opt.zero_grad()
     for i, (ii, lb, am) in enumerate(loader):
         ii, lb, am = ii.to(DEVICE), lb.to(DEVICE), am.to(DEVICE)
-        with torch.autocast(device_type=DEVICE, dtype=AMP_DTYPE, enabled=(DEVICE == "xpu")):
+        with torch.autocast(device_type=DEVICE, dtype=AMP_DTYPE, enabled=(AMP_DTYPE is not None)):
             loss = model(input_ids=ii, attention_mask=am, labels=lb).loss
         if not torch.isfinite(loss):
             skipped += 1; opt.zero_grad(); continue

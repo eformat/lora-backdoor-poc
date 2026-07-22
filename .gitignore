@@ -13,3 +13,4 @@ web-model/
 *.onnx
 *.onnx.data
 *.onnx_data
+BLOG.md
